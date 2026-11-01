@@ -461,6 +461,27 @@ describe("CLIProxy Kiro credits", () => {
       },
     ],
   });
+  it.effect("uses local account labels without changing identity or the hub", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [kiro("a", "Kiro (IdC)"), kiro("p", "Kiro (IdC)")],
+        kiro: (auth) => ({
+          status: 200,
+          body: { credentials: [{ auth_index: auth, usage: usage(1.25) }] },
+        }),
+      });
+      const api = yield* test.api;
+      const original = yield* api.readAccounts(config);
+      const labeled = yield* api.readAccounts({
+        ...config,
+        accountLabels: { "a.json": "A", "p.json": "P" },
+      });
+      expect(labeled.map((account) => account.displayName)).toEqual(["A", "P"]);
+      expect(labeled.map((account) => account.usageLimits.credentialFingerprint)).toEqual(
+        original.map((account) => account.usageLimits.credentialFingerprint),
+      );
+    }),
+  );
   it.effect("reads both labeled credit balances without confusing them with Claude quotas", () =>
     Effect.gen(function* () {
       const queried: Array<string | null> = [];

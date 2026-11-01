@@ -401,10 +401,11 @@ export const makeCliproxyApi = Effect.gen(function* () {
         )
         .pipe(Effect.orDie),
     );
+    const displayName = config.accountLabels?.[account.id]?.trim() || account.label?.trim();
     const base = {
       id: account.id,
       driver: ProviderDriverKind.make("kiro"),
-      ...(account.label?.trim() ? { displayName: account.label.trim() } : {}),
+      ...(displayName ? { displayName } : {}),
       ...(account.email?.trim() ? { email: account.email.trim() } : {}),
     };
     return yield* Effect.gen(function* () {

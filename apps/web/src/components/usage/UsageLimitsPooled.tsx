@@ -600,7 +600,11 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
             color={color}
             now={now}
             label={details?.label}
-            description={details?.description}
+            description={
+              pool.driver === "kiro"
+                ? "Monthly plan credits reported by Kiro. Token counts from the Kiro proxy are estimates, not billed credits."
+                : details?.description
+            }
           />
         );
       })}

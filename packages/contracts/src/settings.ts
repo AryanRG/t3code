@@ -813,6 +813,7 @@ export type AntigravitySettings = typeof AntigravitySettings.Type;
 export const UsageLimitSourceConfig = Schema.Struct({
   kind: Schema.Literal("cliproxy"),
   label: Schema.optional(TrimmedNonEmptyString),
+  accountLabels: Schema.optional(Schema.Record(Schema.String, TrimmedNonEmptyString)),
   url: TrimmedNonEmptyString,
   managementKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("")), secretSetting),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
