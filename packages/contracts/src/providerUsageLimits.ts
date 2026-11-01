@@ -15,6 +15,12 @@ export const ServerProviderUsageWindow = Schema.Struct({
   kind: Schema.Literals(["session", "weekly", "monthly", "other"]),
   label: TrimmedNonEmptyString,
   usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  credits: Schema.optional(
+    Schema.Struct({
+      used: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+      limit: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0)),
+    }),
+  ),
   resetsAt: Schema.optional(IsoDateTime),
   windowDurationMins: Schema.optional(NonNegativeInt),
 });
@@ -57,6 +63,7 @@ export type ProviderUsageLimitsUpdate = typeof ProviderUsageLimitsUpdate.Type;
 
 export const UsageLimitSourceAccount = Schema.Struct({
   id: TrimmedNonEmptyString,
+  displayName: Schema.optional(TrimmedNonEmptyString),
   driver: ProviderDriverKind,
   email: Schema.optional(TrimmedNonEmptyString),
   plan: Schema.optional(TrimmedNonEmptyString),

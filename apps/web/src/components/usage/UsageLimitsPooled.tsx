@@ -7,6 +7,8 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
+  formatCreditBalance,
+  formatCreditsUsed,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
@@ -183,7 +185,8 @@ function SegmentPopover({
         ) : null}
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
-        <Row label="Left">{remaining}%</Row>
+        <Row label="Left">{formatCreditBalance(window) ?? `${remaining}%`}</Row>
+        {window.credits ? <Row label="Used">{formatCreditsUsed(window)}</Row> : null}
         {window.resetsAt ? (
           <Row label="Resets">
             {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)}
@@ -357,7 +360,7 @@ function SegmentTriggers({
             ref={segmentRef}
             type="button"
             style={{ gridColumn: index, gridRow: 1, ...paceMark?.gappedTrack }}
-            aria-label={`${account.displayName ?? (account.email ? accountInitials(account.email) : account.driver)}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}`}
+            aria-label={`${account.displayName ?? (account.email ? accountInitials(account.email) : account.driver)}: ${formatCreditBalance(window) ?? `${remaining}% left`}${resetsIn ? `, ${resetsIn}` : ""}${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}`}
             className="relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8"
           />
         }
@@ -405,7 +408,7 @@ function SegmentTriggers({
           {/* A single-account bar repeats the headline percentage. */}
           {showAccountName ? (
             <span className="shrink-0 font-semibold text-foreground tabular-nums">
-              {remaining}%
+              {formatCreditBalance(window) ?? `${remaining}%`}
             </span>
           ) : null}
           {resetsIn || credits ? (
@@ -467,7 +470,9 @@ function LegendRow({
         <span className="relative">{index}</span>
       </span>
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
-      <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
+      <span className="shrink-0 font-semibold text-foreground tabular-nums">
+        {formatCreditBalance(window) ?? `${remaining}%`}
+      </span>
       <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
         {resetsIn?.replace("resets in ", "↻ ") ?? ""}
         {credits ? (
@@ -517,7 +522,7 @@ function PoolBar({
               color={color}
               now={now}
               index={position + 1}
-              showAccountName={pool.columns.length > 1}
+              showAccountName={pool.columns.length > 1 || member.window.credits !== undefined}
             />
           ) : null,
         )}
@@ -569,7 +574,10 @@ function PoolWindowCard({
 
 function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
   const color = barColor(pool.driver);
-  const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
+  const label =
+    pool.driver === "kiro"
+      ? "Kiro"
+      : (providerClients.get(pool.driver)?.label ?? String(pool.driver));
   const windows = displayLimitWindows(pool);
   return (
     <section className="flex flex-col gap-3">

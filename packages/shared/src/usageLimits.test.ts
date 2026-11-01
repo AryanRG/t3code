@@ -9,6 +9,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   type LimitAccount,
+  formatCreditBalance,
+  formatCreditsUsed,
   collectProviderUsageLimits,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -77,6 +79,78 @@ describe("pools", () => {
     checkedAt,
   };
   const laptop = { entry: { target: { label: "Laptop" } } };
+
+  it("reports an unavailable Kiro account by label without treating it as zero credits", () => {
+    const presentations = new Map([
+      [
+        EnvironmentId.make("local"),
+        {
+          entry: { target: { label: "local" } },
+          serverConfig: {
+            providers: [],
+            usageLimitSources: [
+              {
+                ...source,
+                accounts: [
+                  {
+                    id: "p.json",
+                    driver: ProviderDriverKind.make("kiro"),
+                    displayName: "P",
+                    usageLimits: {
+                      checkedAt,
+                      windows: [],
+                      unavailable: {
+                        reason: "probeFailed" as const,
+                        message: "Check the Kiro login.",
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectLimitNotices(presentations)).toEqual(["hub · P: Check the Kiro login."]);
+  });
+
+  it("keeps Kiro credentials with the same email separate, preserving hub labels", () => {
+    const accounts = ["A", "P"].map((name) => ({
+      id: `${name}.json`,
+      driver: ProviderDriverKind.make("kiro"),
+      displayName: name,
+      email: "same@example.com",
+      usageLimits: {
+        checkedAt,
+        credentialFingerprint: `kiro-${name}`,
+        windows: [
+          {
+            ...weekly,
+            id: "kiro-monthly-credits",
+            kind: "monthly" as const,
+            usedPercent: name === "A" ? 90 : 80,
+            credits: { used: name === "A" ? 9000 : 8000, limit: 10000 },
+          },
+        ],
+      },
+    }));
+    const result = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("local"),
+          {
+            entry: { target: { label: "local" } },
+            serverConfig: { providers: [], usageLimitSources: [{ ...source, accounts }] },
+          },
+        ],
+      ]),
+    );
+    expect(result.map((account) => account.displayName)).toEqual(["A", "P"]);
+    expect(result).toHaveLength(2);
+    expect(collectLimitPools(result, now)[0]?.driver).toBe("kiro");
+  });
 
   it("merges one account reported natively on two environments and by a hub into one entry", () => {
     const native = provider({
@@ -1289,4 +1363,17 @@ describe("ChatGPT sharing presentation", () => {
       }),
     ).toBe(false);
   });
+});
+
+it("formats credit balances without dropping fractional credits or going negative", () => {
+  expect(formatCreditBalance({ ...window, credits: { used: 9935.71, limit: 10000 } })).toBe(
+    "64.29 / 10,000 credits left",
+  );
+  expect(formatCreditBalance({ ...window, credits: { used: 110, limit: 100 } })).toBe(
+    "0 / 100 credits left",
+  );
+  expect(formatCreditsUsed({ ...window, credits: { used: 110, limit: 100 } })).toBe(
+    "110 credits used",
+  );
+  expect(formatCreditBalance(window)).toBeNull();
 });

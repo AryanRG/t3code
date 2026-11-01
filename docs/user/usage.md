@@ -140,7 +140,13 @@ To see pooled accounts, open **Settings → Providers → Usage providers → Ad
 environment that will connect to the hub and enter its URL and management key.
 
 The accounts appear under **Usage → Limits**. Codex accounts show banked reset credits; select an
-account and choose **Use reset** to redeem one. No hub plugin is required.
+account and choose **Use reset** to redeem one. No hub plugin is required for Codex or Claude.
+
+For Kiro accounts, install a Kiro usage plugin on the hub. Enabled accounts appear in a Kiro group, each with its included monthly credits used and
+remaining, plus the reported reset date.
+Trial credits, bonuses and paid overages are not part of this monthly allowance. Account labels
+configured in the hub distinguish multiple logins. Refresh Limits after changing a label or login;
+T3 does not sign in to Kiro or switch accounts.
 
 This connection supplies usage information; configure
 the provider separately to send agent requests through the hub. Remove the hub from the same

@@ -51,11 +51,13 @@ function fixture(
     accounts?: Array<
       (typeof accounts)[number] & {
         disabled?: boolean;
+        label?: string;
         id_token: { chatgpt_account_id: string; plan_type?: string; chatgpt_plan_type?: string };
       }
     >;
     upstream?: (request: RequestBody) => { status: number; body: unknown };
     cooldownStatus?: number;
+    kiro?: (auth: string | null) => { status: number; body: unknown };
   } = {},
 ) {
   const requests: Array<{ path: string; body?: RequestBody }> = [];
@@ -78,6 +80,15 @@ function fixture(
           request,
           Response.json({}, { status: options.cooldownStatus ?? 200 }),
         );
+      if (path.endsWith("/kiro-usage")) {
+        const result = options.kiro?.(new URL(request.url).searchParams.get("auth"));
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json(result?.body ?? {}, {
+            status: result?.status ?? 404,
+          }),
+        );
+      }
       expect(path).toMatch(/\/v0\/management\/api-call$/);
       expect(body?.header?.Authorization).toBe("Bearer $TOKEN$");
       const upstream = options.upstream?.(body!) ?? {
@@ -425,5 +436,152 @@ describe("CLIProxyAPI built-in management API", () => {
       expect(result._tag).toBe("Failure");
       expect(test.requests).toHaveLength(1);
     }),
+  );
+});
+
+describe("CLIProxy Kiro credits", () => {
+  const kiro = (id: string, label: string) => ({
+    id: `${id}.json`,
+    auth_index: id,
+    provider: "kiro",
+    label,
+    email: "shared@example.com",
+    id_token: { chatgpt_account_id: "" },
+  });
+  const usage = (used: number, limit = 10000) => ({
+    nextDateReset: 1793491200,
+    subscriptionInfo: { subscriptionTitle: "KIRO POWER" },
+    usageBreakdownList: [
+      {
+        resourceType: "CREDIT",
+        currentUsage: Math.floor(used),
+        currentUsageWithPrecision: used,
+        usageLimit: limit,
+        usageLimitWithPrecision: limit,
+      },
+    ],
+  });
+  it.effect("reads both labeled credit balances without confusing them with Claude quotas", () =>
+    Effect.gen(function* () {
+      const queried: Array<string | null> = [];
+      const test = fixture({
+        accounts: [kiro("a", "A"), kiro("p", "P"), accounts[1]!],
+        kiro: (auth) => {
+          queried.push(auth);
+          return {
+            status: 200,
+            body: {
+              credentials: [{ auth_index: auth, usage: usage(auth === "a" ? 9935.71 : 9489.79) }],
+            },
+          };
+        },
+      });
+      const api = yield* test.api;
+      const result = yield* api.readAccounts(config);
+      expect(queried.toSorted()).toEqual(["a", "p"]);
+      expect(result.map((a) => a.driver)).toEqual(["kiro", "kiro", "codex"]);
+      expect(result[0]).toMatchObject({
+        displayName: "A",
+        plan: "KIRO POWER",
+        usageLimits: {
+          windows: [
+            {
+              id: "kiro-monthly-credits",
+              kind: "monthly",
+              label: "Monthly credits",
+              resetsAt: "2026-11-01T00:00:00.000Z",
+              credits: { used: 9935.71, limit: 10000 },
+            },
+          ],
+        },
+      });
+      expect(result[0]?.usageLimits.windows[0]?.usedPercent).toBeCloseTo(99.3571);
+      expect(result[1]).toMatchObject({
+        displayName: "P",
+        usageLimits: {
+          windows: [{ credits: { used: 9489.79, limit: 10000 } }],
+        },
+      });
+      expect(
+        test.requests
+          .filter((r) => r.path.endsWith("/api-call"))
+          .every((r) => r.body?.auth_index !== "a" && r.body?.auth_index !== "p"),
+      ).toBe(true);
+    }),
+  );
+  it.effect(
+    "isolates missing plugins and per-account failures without exposing upstream bodies",
+    () =>
+      Effect.gen(function* () {
+        const test = fixture({
+          accounts: [kiro("a", "A"), kiro("p", "P"), accounts[1]!],
+          kiro: (auth) =>
+            auth === "a"
+              ? { status: 404, body: { error: "management-secret" } }
+              : {
+                  status: 200,
+                  body: { credentials: [{ auth_index: auth, error: "token-secret" }] },
+                },
+        });
+        const result = yield* (yield* test.api).readAccounts(config);
+        expect(
+          result.slice(0, 2).every((a) => a.usageLimits.unavailable?.reason === "probeFailed"),
+        ).toBe(true);
+        expect(result[2]?.usageLimits.windows).toHaveLength(1);
+        expect(JSON.stringify(result)).not.toMatch(/management-secret|token-secret/);
+      }),
+  );
+  it.effect("does not fetch disabled accounts or accept a different credential's balance", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ ...kiro("a", "A"), disabled: true }, kiro("p", "P")],
+        kiro: (auth) => {
+          expect(auth).toBe("p");
+          return { status: 200, body: { credentials: [{ auth_index: "a", usage: usage(1) }] } };
+        },
+      });
+      const result = yield* (yield* test.api).readAccounts(config);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.usageLimits.unavailable?.reason).toBe("probeFailed");
+    }),
+  );
+  it.effect(
+    "retains over-limit credits, falls back to integer fields, and rejects invalid quotas",
+    () =>
+      Effect.gen(function* () {
+        for (const [used, limit, expected] of [
+          [110, 100, 100],
+          [25, 100, 25],
+          [-1, 100, null],
+          [1, 0, null],
+        ]) {
+          const test = fixture({
+            accounts: [kiro("p", "P")],
+            kiro: () => ({
+              status: 200,
+              body: {
+                credentials: [
+                  {
+                    auth_index: "p",
+                    usage: {
+                      usageBreakdownList: [
+                        { resourceType: "CREDIT", currentUsage: used, usageLimit: limit },
+                      ],
+                    },
+                  },
+                ],
+              },
+            }),
+          });
+          const [result] = yield* (yield* test.api).readAccounts(config);
+          if (expected === null)
+            expect(result?.usageLimits.unavailable?.reason).toBe("probeFailed");
+          else
+            expect(result?.usageLimits.windows[0]).toMatchObject({
+              usedPercent: expected,
+              credits: { used, limit },
+            });
+        }
+      }),
   );
 });

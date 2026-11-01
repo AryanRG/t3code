@@ -109,6 +109,9 @@ function accountKey(
   email: string | undefined,
   limits?: ServerProviderUsageLimits,
 ): string | null {
+  if (driver === "kiro" && limits?.credentialFingerprint) {
+    return `${driver}:credential:${limits.credentialFingerprint}`;
+  }
   const normalizedEmail = email?.trim().toLowerCase();
   if (normalizedEmail) return `${driver}:${normalizedEmail}`;
   return limits?.credentialFingerprint
@@ -261,7 +264,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         merge(resolveKey(account) ?? key, {
           key,
           driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          displayName:
+            account.displayName ?? (account.email ? null : account.id.replace(/\.json$/i, "")),
           email: account.email,
           plan: account.plan,
           accentColor: undefined,
@@ -300,6 +304,15 @@ export function collectLimitNotices(presentations: LimitPresentations): readonly
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
       if (source.error) {
         notices.push(`${label(environmentLabel, source.label)}: ${source.error}`);
+      } else if (source.accounts.length > 0) {
+        for (const account of source.accounts) {
+          if (account.driver !== "kiro") continue;
+          const notice = limitsNotice(account.usageLimits);
+          if (notice)
+            notices.push(
+              `${label(environmentLabel, source.label)} · ${account.displayName ?? account.id}: ${notice}`,
+            );
+        }
       } else if (source.accounts.length === 0) {
         notices.push(`${label(environmentLabel, source.label)}: No accounts reported.`);
       }
@@ -751,7 +764,7 @@ export function collectProviderUsageLimits(
       accounts.push({
         id: `${source.id}:${account.id}`,
         driver: account.driver,
-        label: `${source.label} · ${account.id}`,
+        label: `${source.label} · ${account.displayName ?? account.id}`,
         sourceLabel: "CLI Proxy",
         ...(account.usageLimits.resetCredits?.nextCreditId
           ? {
@@ -772,4 +785,16 @@ export function collectProviderUsageLimits(
     }
   }
   return { createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)), accounts, notices };
+}
+
+const CREDIT_NUMBER = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+
+export function formatCreditBalance(window: ServerProviderUsageWindow): string | null {
+  if (!window.credits) return null;
+  const { used, limit } = window.credits;
+  return `${CREDIT_NUMBER.format(Math.max(0, limit - used))} / ${CREDIT_NUMBER.format(limit)} credits left`;
+}
+
+export function formatCreditsUsed(window: ServerProviderUsageWindow): string | null {
+  return window.credits ? `${CREDIT_NUMBER.format(window.credits.used)} credits used` : null;
 }

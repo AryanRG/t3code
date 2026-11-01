@@ -9,6 +9,8 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
+  formatCreditBalance,
+  formatCreditsUsed,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -30,6 +32,7 @@ import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const DRIVER_LABEL: Partial<Record<string, string>> = {
   codex: "Codex",
+  kiro: "Kiro",
   claudeAgent: "Claude",
   grok: "Grok",
   antigravity: "Antigravity",
@@ -243,7 +246,7 @@ function PoolWindowCard({
           <Pressable
             key={account.key}
             accessibilityRole="button"
-            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}`}
+            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${formatCreditBalance(window) ?? `${formatCreditBalance(window) ?? `${remainingPercent(window)}% left`}`}${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}`}
             accessibilityHint="Show account details"
             onPress={() => openAccount(account)}
             className={wide ? "h-9 min-w-0 flex-1 rounded-md" : "h-7 min-w-0 flex-1 rounded-md"}
@@ -330,7 +333,7 @@ function PoolWindowCard({
           <Pressable
             key={account.key}
             accessibilityRole="button"
-            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset credits banked` : ""}`}
+            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${formatCreditBalance(window) ?? `${remainingPercent(window)}% left`}${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset credits banked` : ""}`}
             accessibilityHint="Show account details"
             onPress={() => openAccount(account)}
             className="min-h-[44px] flex-row items-center gap-2 active:opacity-60"
@@ -586,8 +589,11 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
             <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
               <Text className="text-sm font-t3-medium text-foreground">{window.label}</Text>
               <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
-                {remainingPercent(window)}% left
+                {formatCreditBalance(window) ?? `${remainingPercent(window)}% left`}
               </Text>
+              {window.credits ? (
+                <Text className="text-sm text-foreground-muted">{formatCreditsUsed(window)}</Text>
+              ) : null}
               {window.resetsAt ? (
                 <Text selectable className="text-sm text-foreground-muted">
                   Resets{" "}

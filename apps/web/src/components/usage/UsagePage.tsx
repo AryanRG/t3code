@@ -104,6 +104,7 @@ import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
   type UsagePagePreferences,
+  type UsagePageProviderKind,
 } from "./usagePagePreferences";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
@@ -200,7 +201,10 @@ export function UsagePage() {
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
-  const hiddenProviders = new Set(preferences.hiddenProviders);
+  const hiddenProviders = new Set(
+    preferences.hiddenProviders?.filter((provider) => provider !== "kiro"),
+  );
+  const hideKiro = preferences.hiddenProviders?.includes("kiro") ?? false;
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const {
@@ -380,8 +384,13 @@ export function UsagePage() {
         <WorkspaceBreadcrumbSeparator />
         <WorkspaceBreadcrumbItem current className="min-w-10">
           <UsageProviderFilter
-            hiddenProviders={hiddenProviders}
-            onChange={(next) => updatePreferences({ hiddenProviders: next })}
+            hiddenProviders={new Set(showingLimits ? preferences.hiddenProviders : hiddenProviders)}
+            includeKiro={showingLimits}
+            onChange={(next) =>
+              updatePreferences({
+                hiddenProviders: !showingLimits && hideKiro ? [...next, "kiro"] : next,
+              })
+            }
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -520,6 +529,7 @@ export function UsagePage() {
               <UsageLimitsSection
                 selectedEnvironmentIds={selectedEnvironmentIds}
                 hiddenProviders={hiddenProviders}
+                hideKiro={hideKiro}
                 now={limitsNow}
                 cursorPrompt={
                   cursorAccessEnvironments.length > 0 ? (
@@ -1429,19 +1439,26 @@ function UsageEnvironmentFilter({
 
 function UsageProviderFilter({
   hiddenProviders,
+  includeKiro,
   onChange,
 }: {
-  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly onChange: (hiddenProviders: readonly UsageProviderKind[]) => void;
+  readonly hiddenProviders: ReadonlySet<UsagePageProviderKind>;
+  readonly includeKiro: boolean;
+  readonly onChange: (hiddenProviders: readonly UsagePageProviderKind[]) => void;
 }) {
-  const visible = PROVIDER_ORDER.filter((provider) => !hiddenProviders.has(provider));
+  const providers: readonly UsagePageProviderKind[] = includeKiro
+    ? [...PROVIDER_ORDER, "kiro"]
+    : PROVIDER_ORDER;
+  const labelFor = (provider: UsagePageProviderKind) =>
+    provider === "kiro" ? "Kiro" : PROVIDER_PRESENTATION[provider].label;
+  const visible = providers.filter((provider) => !hiddenProviders.has(provider));
   const label =
-    visible.length === PROVIDER_ORDER.length
+    visible.length === providers.length
       ? "All providers"
       : visible.length === 0
         ? "No providers"
         : visible.length === 1
-          ? PROVIDER_PRESENTATION[visible[0]!].label
+          ? labelFor(visible[0]!)
           : `${visible.length} providers`;
 
   return (
@@ -1457,27 +1474,29 @@ function UsageProviderFilter({
         <MenuCheckboxItem
           checked={hiddenProviders.size === 0}
           closeOnClick={false}
-          onCheckedChange={(checked) => onChange(checked ? [] : PROVIDER_ORDER)}
+          onCheckedChange={(checked) => onChange(checked ? [] : providers)}
         >
           All providers
         </MenuCheckboxItem>
         <MenuSeparator />
-        {PROVIDER_ORDER.map((provider) => (
+        {providers.map((provider) => (
           <MenuCheckboxItem
             key={provider}
             checked={!hiddenProviders.has(provider)}
             closeOnClick={false}
             onCheckedChange={(checked) =>
               onChange(
-                PROVIDER_ORDER.filter((entry) =>
+                providers.filter((entry) =>
                   entry === provider ? !checked : hiddenProviders.has(entry),
                 ),
               )
             }
           >
             <span className="flex min-w-0 items-center gap-2">
-              <ProviderMark provider={provider} className="size-3.5" />
-              <span className="truncate">{PROVIDER_PRESENTATION[provider].label}</span>
+              {provider !== "kiro" ? (
+                <ProviderMark provider={provider} className="size-3.5" />
+              ) : null}
+              <span className="truncate">{labelFor(provider)}</span>
             </span>
           </MenuCheckboxItem>
         ))}

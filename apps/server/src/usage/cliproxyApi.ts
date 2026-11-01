@@ -10,6 +10,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -23,6 +24,7 @@ const AuthFile = Schema.Struct({
   auth_index: Schema.String,
   provider: Schema.String,
   email: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
   id_token: Schema.optional(
     Schema.Struct({
@@ -82,6 +84,36 @@ const CreditList = Schema.Struct({
     }),
   ),
 });
+
+const KiroReport = Schema.Struct({
+  credentials: Schema.Array(
+    Schema.Struct({
+      auth_index: Schema.String,
+      error: Schema.optional(Schema.String),
+      usage: Schema.optional(Schema.Unknown),
+    }),
+  ),
+});
+const KiroUsage = Schema.Struct({
+  nextDateReset: Schema.optional(Schema.NullOr(Schema.Number)),
+  subscriptionInfo: Schema.optional(
+    Schema.Struct({
+      subscriptionTitle: Schema.optional(Schema.String),
+    }),
+  ),
+  usageBreakdownList: Schema.Array(
+    Schema.Struct({
+      resourceType: Schema.String,
+      currentUsage: Schema.optional(Schema.Number),
+      currentUsageWithPrecision: Schema.optional(Schema.Number),
+      usageLimit: Schema.optional(Schema.Number),
+      usageLimitWithPrecision: Schema.optional(Schema.Number),
+      nextDateReset: Schema.optional(Schema.NullOr(Schema.Number)),
+    }),
+  ),
+});
+const decodeKiroReport = Schema.decodeUnknownEffect(KiroReport);
+const decodeKiroUsage = Schema.decodeUnknownEffect(KiroUsage);
 
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -351,6 +383,98 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
 
+  const readKiroAccount = Effect.fn("CliproxyApi.readKiroAccount")(function* (
+    config: UsageLimitSourceConfig,
+    account: typeof AuthFile.Type,
+  ): Effect.fn.Return<UsageLimitSourceAccount> {
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    // Kiro credentials may share an email while carrying distinct organization subscriptions.
+    const fingerprint = Hex.encode(
+      yield* crypto
+        .digest(
+          "SHA-256",
+          new TextEncoder().encode(
+            yield* encodeJson([new URL(config.url).toString().replace(/\/$/, ""), account.id]).pipe(
+              Effect.orDie,
+            ),
+          ),
+        )
+        .pipe(Effect.orDie),
+    );
+    const base = {
+      id: account.id,
+      driver: ProviderDriverKind.make("kiro"),
+      ...(account.label?.trim() ? { displayName: account.label.trim() } : {}),
+      ...(account.email?.trim() ? { email: account.email.trim() } : {}),
+    };
+    return yield* Effect.gen(function* () {
+      const report = yield* decodeKiroReport(
+        yield* management(config, `kiro-usage?auth=${encodeURIComponent(account.auth_index)}`),
+      );
+      const entries = report.credentials.filter((entry) => entry.auth_index === account.auth_index);
+      const entry = entries[0];
+      if (entries.length !== 1 || !entry || entry.error || entry.usage === undefined) {
+        return yield* new UsageLimitSourceError({ detail: "Kiro credit usage is unavailable." });
+      }
+      const usage = yield* decodeKiroUsage(entry.usage);
+      const balances = usage.usageBreakdownList.filter((item) => item.resourceType === "CREDIT");
+      const balance = balances[0];
+      const used = balance?.currentUsageWithPrecision ?? balance?.currentUsage;
+      const limit = balance?.usageLimitWithPrecision ?? balance?.usageLimit;
+      if (
+        balances.length !== 1 ||
+        used === undefined ||
+        limit === undefined ||
+        !Number.isFinite(used) ||
+        used < 0 ||
+        !Number.isFinite(limit) ||
+        limit <= 0
+      ) {
+        return yield* new UsageLimitSourceError({
+          detail: "Kiro did not report a valid credit allowance.",
+        });
+      }
+      const reset = balance?.nextDateReset ?? usage.nextDateReset;
+      const resetDate =
+        reset === null || reset === undefined ? Option.none() : DateTime.make(reset * 1000);
+      return {
+        ...base,
+        ...(usage.subscriptionInfo?.subscriptionTitle?.trim()
+          ? { plan: usage.subscriptionInfo.subscriptionTitle.trim() }
+          : {}),
+        usageLimits: {
+          checkedAt,
+          credentialFingerprint: fingerprint,
+          windows: [
+            {
+              id: "kiro-monthly-credits",
+              kind: "monthly" as const,
+              label: "Monthly credits",
+              usedPercent: Math.min(100, (used / limit) * 100),
+              credits: { used, limit },
+              ...(Option.isSome(resetDate)
+                ? { resetsAt: DateTime.formatIso(resetDate.value) }
+                : {}),
+            },
+          ],
+        },
+      };
+    }).pipe(
+      Effect.orElseSucceed(() => ({
+        ...base,
+        usageLimits: {
+          ...makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "probeFailed",
+            message:
+              "The hub could not read Kiro credits. Check its Kiro plugin and account login.",
+          }),
+          credentialFingerprint: fingerprint,
+        },
+      })),
+    );
+  });
+
   const readAccounts = Effect.fn("CliproxyApi.readAccounts")(function* (
     config: UsageLimitSourceConfig,
   ): Effect.fn.Return<ReadonlyArray<UsageLimitSourceAccount>, UsageLimitSourceError> {
@@ -364,9 +488,15 @@ export const makeCliproxyApi = Effect.gen(function* () {
     return yield* Effect.forEach(
       accounts.filter(
         (account) =>
-          !account.disabled && (account.provider === "codex" || account.provider === "claude"),
+          !account.disabled &&
+          (account.provider === "codex" ||
+            account.provider === "claude" ||
+            account.provider === "kiro"),
       ),
-      (account) => readAccount(config, account),
+      (account) =>
+        account.provider === "kiro"
+          ? readKiroAccount(config, account)
+          : readAccount(config, account),
       { concurrency: 4 },
     );
   });

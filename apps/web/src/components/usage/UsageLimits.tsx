@@ -12,6 +12,8 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   formatDuration,
   formatResetsIn,
+  formatCreditBalance,
+  formatCreditsUsed,
   type LimitPace,
   paceOf,
   paceRemainingPercent,
@@ -128,7 +130,7 @@ function WindowBar({
   const resetsAt = window.resetsAt
     ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)
     : null;
-  const summary = `${window.label}: ${remaining}% left${
+  const summary = `${window.label}: ${formatCreditBalance(window) ?? `${remaining}% left`}${
     timeLeft === null ? "" : `, ${timeLeft}% of the window left`
   }${resetsIn ? `, ${resetsIn}` : ""}`;
 
@@ -166,8 +168,10 @@ function WindowBar({
       <TooltipPopup side="top">
         <div className="flex flex-col gap-0.5">
           <span className="text-foreground">
-            {remaining}% left{timeLeft !== null ? ` · ${timeLeft}% of the window left` : ""}
+            {formatCreditBalance(window) ?? `${remaining}% left`}
+            {timeLeft !== null ? ` · ${timeLeft}% of the window left` : ""}
           </span>
+          {window.credits ? <span>{formatCreditsUsed(window)}</span> : null}
           {timeLeft !== null ? (
             <span className="text-muted-foreground">The line is where even spending would be.</span>
           ) : null}
@@ -211,7 +215,7 @@ export function LimitWindows({
             <span className="flex min-w-0 items-center gap-2 text-xs">
               <span className="truncate text-muted-foreground">{window.label}</span>
               <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
-                {remainingPercent(window)}% left
+                {formatCreditBalance(window) ?? `${remainingPercent(window)}% left`}
               </span>
             </span>
             <WindowBar color={color} window={window} now={now} />
@@ -360,18 +364,21 @@ export function ResetCredits({
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
+  hideKiro,
   now,
   cursorPrompt,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+  readonly hideKiro: boolean;
   readonly now: number;
   readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const hiddenDrivers = new Set<ServerProvider["driver"]>(
+  const hiddenDrivers = new Set<string>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
   );
+  if (hideKiro) hiddenDrivers.add("kiro");
   const isVisible = (driver: ServerProvider["driver"]) => !hiddenDrivers.has(driver);
   const selected = new Map(
     [...presentations].flatMap(([id, presentation]) => {

@@ -16,6 +16,7 @@ import {
   paceOf,
   paceRemainingPercent,
   remainingPercent,
+  formatCreditBalance,
 } from "@t3tools/shared/usageLimits";
 import { type ReactNode, useContext, useRef, useState } from "react";
 import { Atom } from "effect/reactivity";
@@ -87,7 +88,7 @@ function WindowRow(props: {
       <View className="flex-row items-baseline justify-between gap-3">
         <Text className="text-sm text-foreground">{window.label}</Text>
         <Text className="text-sm font-t3-medium tabular-nums text-foreground">
-          {remaining}% left
+          {formatCreditBalance(window) ?? `${remaining}% left`}
         </Text>
       </View>
       <View
