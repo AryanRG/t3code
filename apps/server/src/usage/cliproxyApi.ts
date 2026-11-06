@@ -100,11 +100,44 @@ const CreditList = Schema.Struct({
   ),
 });
 
+const KiroUsageEntry = Schema.Struct({
+  auth_index: Schema.String,
+  email: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+  usage: Schema.optional(
+    Schema.Struct({
+      nextDateReset: Schema.optional(Schema.NullOr(Schema.Number)),
+      subscriptionInfo: Schema.optional(
+        Schema.NullOr(Schema.Struct({ subscriptionTitle: Schema.optional(Schema.String) })),
+      ),
+      userInfo: Schema.optional(
+        Schema.NullOr(Schema.Struct({ email: Schema.optional(Schema.String) })),
+      ),
+      usageBreakdownList: Schema.optional(
+        Schema.NullOr(
+          Schema.Array(
+            Schema.Struct({
+              resourceType: Schema.optional(Schema.String),
+              currentUsage: Schema.optional(Schema.NullOr(Schema.Number)),
+              currentUsageWithPrecision: Schema.optional(Schema.NullOr(Schema.Number)),
+              usageLimit: Schema.optional(Schema.NullOr(Schema.Number)),
+              usageLimitWithPrecision: Schema.optional(Schema.NullOr(Schema.Number)),
+              nextDateReset: Schema.optional(Schema.NullOr(Schema.Number)),
+            }),
+          ),
+        ),
+      ),
+    }),
+  ),
+});
+const KiroUsageReport = Schema.Struct({ credentials: Schema.Array(KiroUsageEntry) });
+
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeApiResponse = Schema.decodeUnknownEffect(ApiResponse);
 const decodeCreditList = Schema.decodeUnknownEffect(Schema.fromJsonString(CreditList));
 const decodeClaudeUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeUsage));
+const decodeKiroUsageReport = Schema.decodeUnknownEffect(KiroUsageReport);
 const decodeCodexUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexUsage));
 const isUsageLimitSourceError = Schema.is(UsageLimitSourceError);
 
@@ -173,6 +206,76 @@ const creditRedeemRequestId = Effect.fn("CliproxyApi.creditRedeemRequestId")(fun
   const hex = Hex.encode(bytes);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 });
+
+const SUPPORTED_PROVIDERS = new Set(["codex", "claude", "kiro"]);
+
+const driverFor = (provider: string) =>
+  ProviderDriverKind.make(
+    provider === "codex" ? "codex" : provider === "kiro" ? "kiro" : "claudeAgent",
+  );
+
+const formatCredits = (value: number) =>
+  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+const titleCase = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+/** Maps one kiro-usage credential entry to a monthly credits window; undefined if unusable. */
+const kiroUsageToAccount = (
+  entry: typeof KiroUsageEntry.Type,
+  checkedAt: string,
+):
+  | {
+      readonly email?: string;
+      readonly plan: string;
+      readonly usageLimits: UsageLimitSourceAccount["usageLimits"];
+    }
+  | undefined => {
+  if (entry.error || !entry.usage) return undefined;
+  const breakdowns = entry.usage.usageBreakdownList ?? [];
+  const credit = breakdowns.find((item) => item.resourceType === "CREDIT") ?? breakdowns[0];
+  if (!credit) return undefined;
+  const used = credit.currentUsageWithPrecision ?? credit.currentUsage;
+  const limit = credit.usageLimitWithPrecision ?? credit.usageLimit;
+  if (
+    typeof used !== "number" ||
+    typeof limit !== "number" ||
+    !Number.isFinite(used) ||
+    !Number.isFinite(limit) ||
+    used < 0 ||
+    limit <= 0
+  ) {
+    return undefined;
+  }
+  const remaining = Math.max(0, limit - used);
+  const resetSeconds = credit.nextDateReset ?? entry.usage.nextDateReset;
+  const resetsAt =
+    typeof resetSeconds === "number" && Number.isFinite(resetSeconds) && resetSeconds > 0
+      ? DateTime.formatIso(DateTime.makeUnsafe(resetSeconds * 1000))
+      : undefined;
+  const title = entry.usage.subscriptionInfo?.subscriptionTitle?.trim();
+  const email = (entry.usage.userInfo?.email ?? entry.email)?.trim();
+  return {
+    ...(email ? { email } : {}),
+    // Pooled windows share one label, so exact per-account balances live on the plan row.
+    plan: `${title ? titleCase(title) : "Kiro"} · ${formatCredits(used)} used, ${formatCredits(remaining)} left of ${formatCredits(limit)} credits`,
+    usageLimits: {
+      checkedAt,
+      windows: [
+        {
+          id: "kiro_monthly_credits",
+          kind: "monthly",
+          label: "Monthly credits",
+          usedPercent: Math.min(100, (used / limit) * 100),
+          ...(resetsAt ? { resetsAt } : {}),
+        },
+      ],
+    },
+  };
+};
 
 export const makeCliproxyApi = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
@@ -276,13 +379,26 @@ export const makeCliproxyApi = Effect.gen(function* () {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const base = {
       id: account.id,
-      driver: ProviderDriverKind.make(account.provider === "codex" ? "codex" : "claudeAgent"),
+      driver: driverFor(account.provider),
       ...(account.email ? { email: account.email } : {}),
       ...(account.id_token?.chatgpt_account_id?.trim()
         ? { workspaceId: account.id_token.chatgpt_account_id.trim() }
         : {}),
     };
     const read = Effect.gen(function* () {
+      if (account.provider === "kiro") {
+        const raw = yield* management(
+          hub,
+          `kiro-usage?auth=${encodeURIComponent(account.auth_index)}`,
+        );
+        const report = yield* decodeKiroUsageReport(raw);
+        const entry = report.credentials.find((item) => item.auth_index === account.auth_index);
+        const mapped = entry ? kiroUsageToAccount(entry, checkedAt) : undefined;
+        if (!mapped) {
+          return yield* new UsageLimitSourceError({ detail: "Kiro usage was unavailable." });
+        }
+        return { ...base, ...mapped };
+      }
       if (account.provider === "claude") {
         const body = yield* apiCall(hub, account, "https://api.anthropic.com/api/oauth/usage");
         const usage = yield* decodeClaudeUsage(body);
@@ -383,10 +499,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
       ),
     );
     return yield* Effect.forEach(
-      accounts.filter(
-        (account) =>
-          !account.disabled && (account.provider === "codex" || account.provider === "claude"),
-      ),
+      accounts.filter((account) => !account.disabled && SUPPORTED_PROVIDERS.has(account.provider)),
       (account) => readAccount(hub, account),
       { concurrency: 4 },
     );

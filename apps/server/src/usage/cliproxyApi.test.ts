@@ -515,3 +515,126 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 });
+
+const kiroEntry = (auth_index: string, used: number) => ({
+  auth_index,
+  name: `${auth_index}.json`,
+  usage: {
+    nextDateReset: 1796083200,
+    subscriptionInfo: { subscriptionTitle: "KIRO POWER" },
+    userInfo: { email: `${auth_index}@example.com` },
+    usageBreakdownList: [
+      {
+        resourceType: "CREDIT",
+        currentUsage: Math.round(used),
+        currentUsageWithPrecision: used,
+        usageLimit: 10000,
+        usageLimitWithPrecision: 10000,
+        nextDateReset: 1796083200,
+      },
+    ],
+  },
+});
+
+function kiroHub(entries: Record<string, unknown>) {
+  const paths: string[] = [];
+  const http = HttpClient.make((request) =>
+    Effect.sync(() => {
+      expect(request.headers.authorization).toBe("Bearer management-secret");
+      const url = new URL(request.url);
+      paths.push(`${url.pathname}${url.search}`);
+      if (url.pathname.endsWith("/auth-files"))
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            files: [
+              { id: "kiro-a.json", auth_index: "ka", provider: "kiro", label: "Kiro (IdC)" },
+              { id: "kiro-b.json", auth_index: "kb", provider: "kiro" },
+              { id: "kiro-off.json", auth_index: "kc", provider: "kiro", disabled: true },
+              { id: "other.json", auth_index: "x", provider: "gemini" },
+            ],
+          }),
+        );
+      expect(request.method).toBe("GET");
+      expect(url.pathname).toBe("/v0/management/kiro-usage");
+      const auth = url.searchParams.get("auth") ?? "";
+      const entry = entries[auth];
+      return HttpClientResponse.fromWeb(
+        request,
+        entry === undefined
+          ? Response.json({ error: "missing" }, { status: 404 })
+          : Response.json({ credentials: [entry] }),
+      );
+    }),
+  );
+  return {
+    paths,
+    api: makeCliproxyApi.pipe(
+      Effect.provideService(HttpClient.HttpClient, http),
+      Effect.provide(NodeCrypto.layer),
+    ),
+  };
+}
+
+describe("CLIProxyAPI Kiro credits", () => {
+  it.effect("reads enabled Kiro accounts as monthly credit windows", () =>
+    Effect.gen(function* () {
+      const test = kiroHub({ ka: kiroEntry("ka", 4370.32), kb: kiroEntry("kb", 12000) });
+      const accounts = yield* (yield* test.api).readAccounts(config);
+      expect(test.paths).toEqual([
+        "/v0/management/auth-files",
+        "/v0/management/kiro-usage?auth=ka",
+        "/v0/management/kiro-usage?auth=kb",
+      ]);
+      expect(accounts).toHaveLength(2);
+      expect(accounts[0]).toMatchObject({
+        id: "kiro-a.json",
+        driver: "kiro",
+        email: "ka@example.com",
+        plan: "Kiro Power · 4,370.32 used, 5,629.68 left of 10,000 credits",
+        usageLimits: {
+          windows: [
+            {
+              id: "kiro_monthly_credits",
+              kind: "monthly",
+              label: "Monthly credits",
+              resetsAt: "2026-12-01T00:00:00.000Z",
+            },
+          ],
+        },
+      });
+      expect(accounts[0]!.usageLimits.windows[0]!.usedPercent).toBeCloseTo(43.7032);
+      // Over-limit usage stays exact while the bar and remaining balance clamp.
+      expect(accounts[1]!.plan).toBe("Kiro Power · 12,000 used, 0 left of 10,000 credits");
+      expect(accounts[1]!.usageLimits.windows[0]!.usedPercent).toBe(100);
+    }),
+  );
+
+  it.effect("marks only the failing Kiro account unavailable", () =>
+    Effect.gen(function* () {
+      const test = kiroHub({ ka: kiroEntry("ka", 10), kb: { auth_index: "kb", error: "boom" } });
+      const accounts = yield* (yield* test.api).readAccounts(config);
+      expect(accounts[0]!.usageLimits.windows).toHaveLength(1);
+      expect(accounts[1]).toMatchObject({
+        id: "kiro-b.json",
+        driver: "kiro",
+        usageLimits: { windows: [], unavailable: { reason: "probeFailed" } },
+      });
+      expect(JSON.stringify(accounts[1])).not.toContain("boom");
+    }),
+  );
+
+  it.effect("treats a missing plugin endpoint or zero allowance as unavailable", () =>
+    Effect.gen(function* () {
+      const zero = kiroEntry("kb", 0);
+      zero.usage.usageBreakdownList[0]!.usageLimit = 0;
+      zero.usage.usageBreakdownList[0]!.usageLimitWithPrecision = 0;
+      const test = kiroHub({ kb: zero });
+      const accounts = yield* (yield* test.api).readAccounts(config);
+      expect(accounts.map((account) => account.usageLimits.unavailable?.reason)).toEqual([
+        "probeFailed",
+        "probeFailed",
+      ]);
+    }),
+  );
+});
